@@ -48,14 +48,12 @@ def find_game_archives_dir(user_path=None):
             if os.path.exists(os.path.join(cand, "Archives", "pc.tab")):
                 return os.path.join(cand, "Archives")
 
-    # Verificar pasta atual e subpastas
     cwd = os.getcwd()
     if os.path.exists(os.path.join(cwd, "pc.tab")):
         return cwd
     if os.path.exists(os.path.join(cwd, "Archives", "pc.tab")):
         return os.path.join(cwd, "Archives")
 
-    # Locais padrao comuns no Windows e Linux
     common_locations = [
         # Linux
         os.path.expanduser("~/.local/share/Steam/steamapps/common/Just Cause/Archives"),
@@ -170,7 +168,6 @@ def main():
     parser.add_argument("--game-dir", help="Caminho para a pasta do jogo Just Cause ou a pasta Archives")
     args = parser.parse_args()
 
-    # Localizar dicionario de traducao
     script_dir = os.path.dirname(os.path.abspath(__file__))
     json_path = os.path.join(script_dir, "translations_ptbr.json")
     if not os.path.exists(json_path):
@@ -183,7 +180,6 @@ def main():
     ptbr_map = {k: remove_accents(v) for k, v in raw_map.items()}
     print(f"      -> {len(ptbr_map)} textos carregados com sucesso!")
 
-    # Localizar pasta Archives
     print("\n[2/4] Localizando instalacao do jogo...")
     archives_dir = find_game_archives_dir(args.game_dir)
 
@@ -205,7 +201,6 @@ def main():
         print("ERRO: Os arquivos 'pc.tab' ou 'pc4.arc' nao foram encontrados na pasta informada.")
         sys.exit(1)
 
-    # Backup do arquivo de indice
     print("\n[3/4] Verificando backups...")
     if not os.path.exists(pc_tab_orig):
         print("      Criando backup original (pc.tab.orig)...")
@@ -215,11 +210,9 @@ def main():
     else:
         print("      -> Backup original existente detectado.")
 
-    # Reset do pc4.arc para tamanho base
     with open(pc4_arc_path, "r+b") as f:
         f.truncate(ORIGINAL_PC4_SIZE)
 
-    # Iniciar processo de injecao
     print("\n[4/4] Injetando traducao nos arquivos do jogo...")
 
     with open(pc_tab_orig, "rb") as f:
@@ -254,7 +247,7 @@ def main():
 
     for i in range(num_entries):
         h, block, sz = struct.unpack("<3I", tab_bytes[12 + i*12 : 12 + (i+1)*12])
-        head = read_entry(block, min(sz, 64))
+        head = read_entry(block, min(sz, 32))
 
         # Arquivo de controles de teclado
         if i == 731:
@@ -272,22 +265,27 @@ def main():
             total_keys += rep
             continue
 
-        # Conteineres SARC com arquivos de texto CSV
-        if head.startswith(b"\x04\x00\x00\x00SARC") and b".csv" in read_entry(block, min(sz, 1024)):
-            data = read_entry(block, sz)
-            rebuilt_sarc, rep = rebuild_sarc(data, ptbr_map)
-            if rep > 0:
-                pad = (ALIGN - (current_pc4_size % ALIGN)) % ALIGN
-                if pad > 0:
-                    out_arc.write(b"\x00" * pad)
-                    current_pc4_size += pad
-                new_block = (base_pc4_offset + current_pc4_size) // ALIGN
-                new_size = len(rebuilt_sarc)
-                out_arc.write(rebuilt_sarc)
-                current_pc4_size += new_size
-                struct.pack_into("<2I", tab_bytes, 12 + i*12 + 4, new_block, new_size)
-                total_keys += rep
-                sarcs_patched += 1
+        # Conteineres SARC
+        if head.startswith(b"\x04\x00\x00\x00SARC"):
+            nlen = struct.unpack("<I", head[16:20])[0]
+            extra = read_entry(block, min(sz, 24 + nlen))
+            first_off = struct.unpack("<I", extra[20 + nlen : 24 + nlen])[0]
+            dir_bytes = read_entry(block, min(sz, first_off))
+            if b".csv" in dir_bytes or b".CSV" in dir_bytes:
+                data = read_entry(block, sz)
+                rebuilt_sarc, rep = rebuild_sarc(data, ptbr_map)
+                if rep > 0:
+                    pad = (ALIGN - (current_pc4_size % ALIGN)) % ALIGN
+                    if pad > 0:
+                        out_arc.write(b"\x00" * pad)
+                        current_pc4_size += pad
+                    new_block = (base_pc4_offset + current_pc4_size) // ALIGN
+                    new_size = len(rebuilt_sarc)
+                    out_arc.write(rebuilt_sarc)
+                    current_pc4_size += new_size
+                    struct.pack_into("<2I", tab_bytes, 12 + i*12 + 4, new_block, new_size)
+                    total_keys += rep
+                    sarcs_patched += 1
 
     out_arc.flush()
     out_arc.close()
